@@ -264,6 +264,22 @@ def _extract_generation_params(request) -> Tuple[Optional[str], Optional[str]]:
         mapped = ASPECT_RATIO_MAP.get(token.upper())
         if mapped:
             return mapped
+
+        numeric_match = re.match(r"^(?P<w>\d+(?:\.\d+)?)\:(?P<h>\d+(?:\.\d+)?)$", token)
+        if numeric_match:
+            try:
+                width = float(numeric_match.group("w"))
+                height = float(numeric_match.group("h"))
+                if width > 0 and height > 0:
+                    ratio = width / height
+                    best = min(
+                        ASPECT_RATIO_FLOAT_MAP.items(),
+                        key=lambda item: abs(ratio - item[1]),
+                    )[0]
+                    return best
+            except Exception:
+                return token
+
         return token
 
     def _normalize_image_size(value: Any) -> Optional[str]:

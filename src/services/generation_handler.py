@@ -1314,15 +1314,24 @@ class GenerationHandler:
 
             # 检查是否需要 upsample
             upsample_resolution = model_config.get("upsample")
-            if upsample_resolution and media_id:
+            if upsample_resolution:
                 upsample_started_at = time.time()
                 resolution_name = "4K" if "4K" in upsample_resolution else "2K"
                 await self._update_request_log_progress(request_log_state, token_id=token.id, status_text=f"upsampling_{resolution_name.lower()}", progress=82)
                 if stream:
                     yield self._create_stream_chunk(f"正在放大图片到 {resolution_name}...\n")
 
+                if not media_id:
+                    error_msg = f"{resolution_name} 图片放大失败: 上游未返回 media_id"
+                    self._mark_generation_failed(generation_result, error_msg)
+                    if stream:
+                        yield self._create_stream_chunk(f"❌ {error_msg}\n")
+                    yield self._create_error_response(error_msg, status_code=502)
+                    return
+
                 # 4K/2K 图片重试逻辑 - 最多重试3次
                 max_retries = 3
+                upsample_error_message = None
                 for retry_attempt in range(max_retries):
                     try:
                         # 调用 upsample API
@@ -1405,12 +1414,14 @@ class GenerationHandler:
                                 return
                         else:
                             debug_logger.log_warning("[UPSAMPLE] 返回结果为空")
+                            upsample_error_message = f"{resolution_name} 图片放大失败: 上游返回空结果"
                             if stream:
-                                yield self._create_stream_chunk(f"⚠️ 放大失败，返回原图...\n")
+                                yield self._create_stream_chunk("⚠️ 放大返回空结果\n")
                             break  # 空结果不重试
 
                     except Exception as e:
                         error_str = str(e)
+                        upsample_error_message = f"{resolution_name} 图片放大失败: {error_str}"
                         debug_logger.log_error(f"[UPSAMPLE] 放大失败 (尝试 {retry_attempt + 1}/{max_retries}): {error_str}")
                         
                         # 检查是否是可重试错误（403、reCAPTCHA、超时等）
@@ -1423,10 +1434,16 @@ class GenerationHandler:
                             continue
                         else:
                             if stream:
-                                yield self._create_stream_chunk(f"⚠️ 放大失败: {error_str}，返回原图...\n")
+                                yield self._create_stream_chunk(f"⚠️ 放大失败: {error_str}\n")
                             break
                 if image_trace is not None:
                     image_trace["upsample_ms"] = int((time.time() - upsample_started_at) * 1000)
+                error_msg = upsample_error_message or f"{resolution_name} 图片放大失败"
+                self._mark_generation_failed(generation_result, error_msg)
+                if stream:
+                    yield self._create_stream_chunk(f"❌ {error_msg}\n")
+                yield self._create_error_response(error_msg, status_code=502)
+                return
 
             local_url = image_url
             cache_started_at = time.time()
